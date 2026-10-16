@@ -1,13 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 import '../models/mission.dart';
 import '../providers/mission_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/hud_elements.dart';
 import 'mission_panel.dart';
-
-const _mapStyle = '[{"elementType":"geometry","stylers":[{"color":"#0a0c0f"}]},{"elementType":"labels.text.fill","stylers":[{"color":"#4a5568"}]},{"elementType":"labels.text.stroke","stylers":[{"color":"#0a0c0f"}]},{"featureType":"administrative","elementType":"geometry","stylers":[{"color":"#1a2030"}]},{"featureType":"administrative.country","elementType":"labels.text.fill","stylers":[{"color":"#6b7a8d"}]},{"featureType":"administrative.locality","elementType":"labels.text.fill","stylers":[{"color":"#556070"}]},{"featureType":"poi","stylers":[{"visibility":"off"}]},{"featureType":"road","elementType":"geometry","stylers":[{"color":"#1a2030"}]},{"featureType":"road","elementType":"geometry.stroke","stylers":[{"color":"#0f1520"}]},{"featureType":"road","elementType":"labels.text.fill","stylers":[{"color":"#3d4a5c"}]},{"featureType":"road.highway","elementType":"geometry","stylers":[{"color":"#1e2d42"}]},{"featureType":"road.highway","elementType":"labels.text.fill","stylers":[{"color":"#445566"}]},{"featureType":"transit","stylers":[{"visibility":"off"}]},{"featureType":"water","elementType":"geometry","stylers":[{"color":"#060810"}]},{"featureType":"water","elementType":"labels.text.fill","stylers":[{"color":"#1a2535"}]}]';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -16,14 +15,8 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
-  GoogleMapController? _mapController;
+  final _mapController = MapController();
   bool _showMissionList = false;
-
-  @override
-  void dispose() {
-    _mapController?.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -44,48 +37,64 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Widget _buildMap(MissionProvider provider) {
-    return GoogleMap(
-      initialCameraPosition: const CameraPosition(target: LatLng(25.0330, 121.5654), zoom: 12),
-      onMapCreated: (c) { _mapController = c; c.setMapStyle(_mapStyle); },
-      markers: _buildMarkers(provider),
-      polylines: _buildPolylines(provider),
-      zoomControlsEnabled: false,
-      myLocationButtonEnabled: false,
-      compassEnabled: false,
-      mapToolbarEnabled: false,
-      onTap: (_) { if (provider.activeMissionId != null) provider.clearSelection(); },
+    return FlutterMap(
+      mapController: _mapController,
+      options: MapOptions(
+        initialCenter: const LatLng(25.0330, 121.5654),
+        initialZoom: 12,
+        backgroundColor: ZeroPointColors.bg,
+        onTap: (_, __) {
+          if (provider.activeMissionId != null) provider.clearSelection();
+        },
+      ),
+      children: [
+        // OpenStreetMap tiles, darkened into a tactical look. CARTO's Dark
+        // Matter used to do this for free, but since 2026 it needs an API key
+        // and serves an "API KEY REQUIRED" tile without one.
+        TileLayer(
+          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          userAgentPackageName: 'com.zeropoint.zeropoint',
+          maxZoom: 19,
+          tileBuilder: _tacticalTile,
+        ),
+        // OSM's tile policy asks for visible attribution.
+        const SimpleAttributionWidget(
+          source: Text('OpenStreetMap contributors'),
+          backgroundColor: Color(0xCC000000),
+        ),
+        // Strand lines between waypoints
+        PolylineLayer(
+          polylines: provider.missions
+              .where((m) => m.status == MissionStatus.active && m.waypoints.length > 1)
+              .map((m) => Polyline(
+                    points: m.waypoints.map((w) => w.position).toList(),
+                    color: ZeroPointColors.accent.withOpacity(0.35),
+                    strokeWidth: 1.5,
+                    pattern: StrokePattern.dashed(segments: const [10, 6]),
+                  ))
+              .toList(),
+        ),
+        // Waypoint markers
+        MarkerLayer(
+          markers: [
+            for (final mission in provider.missions)
+              for (final wp in mission.waypoints)
+                Marker(
+                  point: wp.position,
+                  width: 36,
+                  height: 36,
+                  child: GestureDetector(
+                    onTap: () => provider.selectMission(mission.id),
+                    child: _WaypointMarker(
+                      isCompleted: wp.isCompleted,
+                      isActive: provider.activeMissionId == mission.id,
+                    ),
+                  ),
+                ),
+          ],
+        ),
+      ],
     );
-  }
-
-  Set<Marker> _buildMarkers(MissionProvider provider) {
-    final markers = <Marker>{};
-    for (final mission in provider.missions) {
-      for (final wp in mission.waypoints) {
-        final isActive = provider.activeMissionId == mission.id;
-        final hue = wp.isCompleted ? BitmapDescriptor.hueGreen : isActive ? BitmapDescriptor.hueOrange : BitmapDescriptor.hueAzure;
-        markers.add(Marker(
-          markerId: MarkerId(wp.id),
-          position: wp.position,
-          icon: BitmapDescriptor.defaultMarkerWithHue(hue),
-          infoWindow: InfoWindow(title: wp.name, snippet: wp.description),
-          onTap: () => provider.selectMission(mission.id),
-        ));
-      }
-    }
-    return markers;
-  }
-
-  Set<Polyline> _buildPolylines(MissionProvider provider) {
-    return provider.missions
-        .where((m) => m.status == MissionStatus.active && m.waypoints.length > 1)
-        .map((m) => Polyline(
-              polylineId: PolylineId(m.id),
-              points: m.waypoints.map((w) => w.position).toList(),
-              color: const Color(0x55FF6000),
-              width: 2,
-              patterns: [PatternItem.dash(12), PatternItem.gap(8)],
-            ))
-        .toSet();
   }
 
   Widget _buildTopBar(MissionProvider provider) {
@@ -134,7 +143,10 @@ class _MapScreenState extends State<MapScreen> {
             const SizedBox(height: 12),
             MissionProgressBar(progress: mission.progress),
             const SizedBox(height: 12),
-            ...mission.waypoints.map((wp) => _WaypointRow(waypoint: wp, onComplete: () => provider.completeWaypoint(mission.id, wp.id))),
+            ...mission.waypoints.map((wp) => _WaypointRow(
+                  waypoint: wp,
+                  onComplete: () => provider.completeWaypoint(mission.id, wp.id),
+                )),
           ],
         ),
       ),
@@ -152,7 +164,7 @@ class _MapScreenState extends State<MapScreen> {
             missions: provider.missions,
             onSelect: (m) {
               provider.selectMission(m.id);
-              _mapController?.animateCamera(CameraUpdate.newLatLngZoom(m.center, 13));
+              _mapController.move(m.center, 13);
               setState(() => _showMissionList = false);
             },
           ),
@@ -178,7 +190,7 @@ class _MapScreenState extends State<MapScreen> {
                 builder: (_) => CreateMissionSheet(onCreated: (mission) {
                   provider.addMission(mission);
                   provider.selectMission(mission.id);
-                  _mapController?.animateCamera(CameraUpdate.newLatLngZoom(mission.center, 12));
+                  _mapController.move(mission.center, 12);
                 }),
               ),
             ),
@@ -186,6 +198,42 @@ class _MapScreenState extends State<MapScreen> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Turns a light OSM tile into a near-black, slightly cool tactical one:
+/// invert, take luminance (BT.709), dim to 60%, and lift blue by 10%.
+Widget _tacticalTile(BuildContext context, Widget tileWidget, TileImage tile) {
+  const r = 0.2126 * 0.6, g = 0.7152 * 0.6, b = 0.0722 * 0.6, base = 255 * 0.6;
+  return ColorFiltered(
+    colorFilter: const ColorFilter.matrix(<double>[
+      -r, -g, -b, 0, base,
+      -r, -g, -b, 0, base,
+      -r * 1.1, -g * 1.1, -b * 1.1, 0, base * 1.1,
+      0, 0, 0, 1, 0,
+    ]),
+    child: tileWidget,
+  );
+}
+
+class _WaypointMarker extends StatelessWidget {
+  final bool isCompleted;
+  final bool isActive;
+  const _WaypointMarker({required this.isCompleted, required this.isActive});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isCompleted ? ZeroPointColors.success : isActive ? ZeroPointColors.accent : ZeroPointColors.textSecondary;
+    return Container(
+      width: 36, height: 36,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: color.withOpacity(0.15),
+        border: Border.all(color: color, width: isActive ? 2 : 1),
+        boxShadow: isActive ? [BoxShadow(color: color.withOpacity(0.5), blurRadius: 14, spreadRadius: 2)] : null,
+      ),
+      child: Icon(isCompleted ? Icons.check : Icons.radio_button_unchecked, color: color, size: 16),
     );
   }
 }

@@ -32,7 +32,8 @@ dependencies:
     sdk: flutter
 
   cupertino_icons: ^1.0.6
-  google_maps_flutter: ^2.9.0
+  flutter_map: ^7.0.2
+  latlong2: ^0.9.1
   provider: ^6.1.2
   uuid: ^4.4.0
   shared_preferences: ^2.2.3
